@@ -1,0 +1,5 @@
+# Python 3.9+ recommended
+numpy>=1.26
+matplotlib>=3.8
+uproot>=5.3
+PyQt5>=5.15

@@ -32,12 +32,12 @@ def rebin_2d(values: np.ndarray, xedges: np.ndarray, yedges: np.ndarray, fx: int
 
 
 class PIDGui(QtWidgets.QMainWindow):
-    def __init__(self, root_path: Path):
+    def __init__(self, root_path: Path | None = None):
         super().__init__()
         self.setWindowTitle("PID Viewer")
-        self.root_path = root_path
-        self.root_file = uproot.open(root_path)
-        self.hist_map = {key.split(";")[0]: key for key in self.root_file.keys()}
+        self.root_path: Path | None = root_path
+        self.root_file = None
+        self.hist_map: dict[str, str] = {}
 
         self.current_hist_name: str | None = None
         self.current_hist_title: str | None = None
@@ -73,6 +73,10 @@ class PIDGui(QtWidgets.QMainWindow):
         self._build_ui()
         self._connect_events()
         self._init_selector()
+        self._set_hist_controls_enabled(False)
+        self._update_root_label()
+        if root_path is not None:
+            self._load_root_file(root_path)
 
     @staticmethod
     def _axis_title(axis, default: str) -> str:
@@ -92,10 +96,14 @@ class PIDGui(QtWidgets.QMainWindow):
         control_layout = QtWidgets.QVBoxLayout(control_widget)
         splitter.addWidget(control_widget)
 
-        control_layout.addWidget(QtWidgets.QLabel(f"ROOT file:\n{self.root_path}"))
+        self.open_root_btn = QtWidgets.QPushButton("Open ROOT file")
+        control_layout.addWidget(self.open_root_btn)
+
+        self.root_label = QtWidgets.QLabel("No ROOT file loaded")
+        self.root_label.setWordWrap(True)
+        control_layout.addWidget(self.root_label)
 
         self.list_widget = QtWidgets.QListWidget()
-        self.list_widget.addItems(sorted(self.hist_map.keys()))
         control_layout.addWidget(self.list_widget)
 
         btn_layout = QtWidgets.QHBoxLayout()
@@ -188,6 +196,7 @@ class PIDGui(QtWidgets.QMainWindow):
         splitter.setSizes([250, 800])
 
     def _connect_events(self) -> None:
+        self.open_root_btn.clicked.connect(self.choose_root_file)
         self.load_btn.clicked.connect(self.load_selected_histogram)
         self.apply_rebin_btn.clicked.connect(self.redraw_histogram)
         self.log_checkbox.stateChanged.connect(self.redraw_histogram)
@@ -214,6 +223,99 @@ class PIDGui(QtWidgets.QMainWindow):
     def _update_swap_label(self) -> None:
         x_label, y_label = self.axis_titles_base
         self.swap_checkbox.setText(f"Swap axes ({x_label} <-> {y_label})")
+
+    def _update_root_label(self) -> None:
+        if self.root_path is None:
+            self.root_label.setText("No ROOT file loaded")
+        else:
+            self.root_label.setText(f"ROOT file:\n{self.root_path}")
+
+    def _set_hist_controls_enabled(self, enabled: bool) -> None:
+        widgets = [
+            self.list_widget,
+            self.load_btn,
+            self.clear_polys_btn,
+            self.log_checkbox,
+            self.swap_checkbox,
+            self.rebin_x,
+            self.rebin_y,
+            self.rebin_z,
+            self.apply_rebin_btn,
+            self.export_btn,
+            self.mode_select_radio,
+            self.mode_draw_radio,
+            self.poly_list,
+            self.poly_name_edit,
+            self.rename_poly_btn,
+            self.set_color_btn,
+            self.new_poly_btn,
+            self.clear_selected_btn,
+            self.clear_all_btn,
+        ]
+        for widget in widgets:
+            widget.setEnabled(enabled)
+
+    def choose_root_file(self) -> None:
+        start_dir = str(self.root_path.parent) if self.root_path else str(Path.cwd())
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open ROOT file",
+            start_dir,
+            "ROOT files (*.root);;All files (*.*)",
+        )
+        if not path:
+            return
+        self._load_root_file(Path(path))
+
+    def _reset_histogram_state(self) -> None:
+        self.current_hist_name = None
+        self.current_hist_title = None
+        self.values = None
+        self.xedges = None
+        self.yedges = None
+        self.xcenters = None
+        self.ycenters = None
+        self.display_values = None
+        self.display_xedges = None
+        self.display_yedges = None
+        self.display_xcenters = None
+        self.display_ycenters = None
+        self.axis_titles = ("X", "Y")
+        self.axis_titles_base = ("X", "Y")
+        self.full_xlim = None
+        self.full_ylim = None
+        self.rebin_x.setValue(1)
+        self.rebin_y.setValue(1)
+        self.rebin_z.setValue(256)
+        self.clear_polygons()
+        self.list_widget.clear()
+        self.canvas.draw_idle()
+
+    def _load_root_file(self, root_path: Path) -> None:
+        if not root_path.exists():
+            self.status.showMessage(f"File not found: {root_path}", 5000)
+            return
+        try:
+            root_file = uproot.open(root_path)
+        except Exception as exc:
+            self.status.showMessage(f"Failed to open ROOT file: {exc}", 6000)
+            return
+
+        if self.root_file is not None:
+            try:
+                self.root_file.close()
+            except Exception:
+                pass
+
+        self.root_file = root_file
+        self.root_path = root_path
+        self.hist_map = {key.split(";")[0]: key for key in self.root_file.keys()}
+        self._reset_histogram_state()
+        self.list_widget.addItems(sorted(self.hist_map.keys()))
+        self._update_root_label()
+        self._update_swap_label()
+        self._set_hist_controls_enabled(True)
+        self.status.showMessage(f"Opened {root_path.name} ({len(self.hist_map)} histograms)", 5000)
 
     def _init_selector(self) -> None:
         self.selector = PolygonSelector(
@@ -257,6 +359,9 @@ class PIDGui(QtWidgets.QMainWindow):
             self._init_selector()
 
     def load_selected_histogram(self) -> None:
+        if self.root_file is None:
+            self.status.showMessage("Open a ROOT file first", 4000)
+            return
         item = self.list_widget.currentItem()
         if not item:
             self.status.showMessage("Select a histogram first", 4000)
@@ -898,11 +1003,11 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="GUI PID viewer for ROOT histograms")
-    parser.add_argument("root_file", nargs="?", default="combined_124Xe_all_runs_PID.root", help="Path to ROOT file")
+    parser.add_argument("root_file", nargs="?", help="Path to ROOT file")
     args = parser.parse_args()
 
-    root_path = Path(args.root_file)
-    if not root_path.exists():
+    root_path = Path(args.root_file) if args.root_file else None
+    if root_path is not None and not root_path.exists():
         raise SystemExit(f"File not found: {root_path}")
 
     app = QtWidgets.QApplication(sys.argv)

@@ -841,6 +841,18 @@ class PIDGui(QtWidgets.QMainWindow):
         self._refresh_polygon_list(select_index=min(idx, len(self.polygons) - 1))
         self.status.showMessage("Polygon removed", 3000)
 
+    @staticmethod
+    def _sanitize_poly_name(name: str, fallback: str) -> str:
+        # Keep simple ASCII-safe identifiers for the export key
+        safe = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in name.strip())
+        safe = safe.strip("_")
+        return safe or fallback
+
+    @staticmethod
+    def _format_polygon_key(hist_name: str | None, poly_name: str, idx: int) -> str:
+        # Export key should just be the polygon name (sanitized)
+        return PIDGui._sanitize_poly_name(poly_name or f"polygon_{idx}", f"polygon_{idx}")
+
     def export_polygons(self) -> None:
         if not self.polygons:
             self.status.showMessage("No polygons to export", 4000)
@@ -856,15 +868,28 @@ class PIDGui(QtWidgets.QMainWindow):
         )
         if not path:
             return
-        lines = ["# PID GUI polygon export", f"# ROOT file: {self.root_path}"]
+        header = [
+            "# =============================================",
+            "# Initial polygons for cut seeding (rigidity, dE/dx)",
+            "# Stored as semicolon-separated x,y point pairs (closed polygons repeat first point)",
+            "# =============================================",
+            f"# ROOT file: {self.root_path}",
+            f"# Histogram: {self.current_hist_name or ''}",
+            "",
+        ]
+
+        lines = list(header)
         for idx, poly in enumerate(self.polygons, 1):
             name = poly.get("name", f"Polygon {idx}")
-            # Only include the polygon name in the header line
+            key = self._format_polygon_key(self.current_hist_name, name, idx)
+            vertices = list(poly.get("vertices", []))
+            if vertices and (vertices[0] != vertices[-1]):
+                vertices = vertices + [vertices[0]]
+            coord_str = ";".join(f"{x},{y}" for x, y in vertices)
             lines.append(f"# {name}")
-            lines.append("x y")
-            for x, y in poly["vertices"]:
-                lines.append(f"{x} {y}")
+            lines.append(f"{key} = {coord_str}")
             lines.append("")
+
         Path(path).write_text("\n".join(lines), encoding="ascii")
         self.status.showMessage(f"Saved {len(self.polygons)} polygons to {path}", 5000)
 
